@@ -6,9 +6,20 @@ var Client = require('azure-iot-device').Client;
 var ConnectionString = require('azure-iot-device').ConnectionString;
 var Message = require('azure-iot-device').Message;
 
-var connectionString = <Your connection string here:'HostName=*.azure-devices.cn;DeviceId=*;SharedAccessKey=*'>;
+var connectionString =
+    'HostName=[Your IoT Hub name].azure-devices.com;DeviceId=[Your device ID];SharedAccessKey=[Your device key]';
+
+var connect = process.argv[2];
+var updateStartTime = process.argv[3];
+
+if (typeof(connect) != 'undefined') connectionString = connect;
+if (typeof(updateStartTime) == 'undefined') updateStartTime = 0;
+
+raspberry.connectionString = connectionString;
+
 var deviceId = ConnectionString.parse(connectionString).DeviceId;
 var sensorData = raspberry.getSensorData();
+var deviceTwin = null;
 
 function printErrorFor(op) {
   return function printError(err) {
@@ -16,17 +27,16 @@ function printErrorFor(op) {
   };
 }
 
-function generateRandomIncrement() {
-  return ((Math.random() * 2) - 1);
-}
+
 
 var deviceMetaData = {
   'ObjectType': 'DeviceInfo',
   'IsSimulatedDevice': 0,
-  'Version': raspberry.getVersion(),
+  'Version': '1.0',
   'Temperature': parseInt(sensorData.temperature),
   'Humidity': parseInt(sensorData.humidity),
-  'DeviceProperties': {'DeviceID': deviceId, 'TelemetryInterval': 1},
+  'DeviceProperties':
+      {'DeviceID': deviceId, 'TelemetryInterval': 1, 'HubEnabledState': true},
   'Telemetry': [
     {'Name': 'Temperature', 'DisplayName': 'Temperature', 'Type': 'double'},
     {'Name': 'Humidity', 'DisplayName': 'Humidity', 'Type': 'double'}
@@ -54,7 +64,7 @@ var reportedProperties = {
         'Change light status, 0 light off, 1 light on',
     'LightBlink': 'Blink Light',
     'InitiateFirmwareUpdate--FwPackageURI-string':
-        'Updates device Firmware. Use parameter FwPackageURI to specifiy the URI of the firmware file, e.g. https://iotrmassets.blob.core.windows.net/firmwares/FW20.bin'
+        'Updates device Firmware. Use parameter FwPackageURI to specifiy the URI of the firmware file, e.g. https://raw.githubusercontent.com/radiocom/azure-remote-monitoring-raspberry-pi-node/master/raspberry-V2.js'
   },
 };
 
@@ -95,45 +105,42 @@ function onLightBlink(request, response) {
 
 function onInitiateFirmwareUpdate(request, response) {
   console.log('Download firmware from: ' + request.payload.FwPackageURI);
-  // First Step: download firmware.
-  var result = raspberry.updateFirmwareStep(1, request.payload.FwPackageURI);
-  if (result) {
-    // Complete the response
-    response.send(200, 'Firmware update initiated', function(err) {
-      if (!!err) {
-        console.error(
-            'An error ocurred when sending a method response:\n' +
-            err.toString());
-      } else {
-        console.log(
-            'Response to method \'' + request.methodName +
-            '\' sent successfully.');
-      }
-    });
 
-    // Step2 is replacing files, Step3 is restarting.
-    // We assume that both the two steps are always correct, because they are
-    // doing only local operations.
-    result = raspberry.updateFirmwareStep(2);
-    result = raspberry.updateFirmwareStep(3);
-    process.exit();
-  } else {
-    // Complete the response
-    response.send(500, 'Firmware download failed', function(err) {
-      if (!!err) {
-        console.error(
-            'An error ocurred when sending a method response:\n' +
-            err.toString());
-      } else {
-        console.log(
-            'Response download error to method \'' + request.methodName +
-            '\'.');
-      }
-    });
-  }
+  // Complete the response
+  response.send(200, 'Firmware update initiated', function(err) {
+    if (!!err) {
+      console.error(
+          'An error ocurred when sending a method response:\n' +
+          err.toString());
+    } else {
+      console.log(
+          'Response to method \'' + request.methodName +
+          '\' sent successfully.');
+    }
+  });
+
+
+  // Clean properties in server cache.
+
+  deviceTwin.properties.reported.update(
+      {'Method': {'UpdateFirmware': null}}, function(err) {
+        if (err) throw err;
+        console.log('twin state: clear UpdateFirmware');
+
+
+        var result = raspberry.updateFirmwareStep(
+            deviceTwin, 1, request.payload.FwPackageURI, () => {
+              raspberry.updateFirmwareStep(deviceTwin, 2, 0, () => {
+                raspberry.updateFirmwareStep(deviceTwin, 3);
+              });
+
+
+            });
+      });
 }
 
 var client = Client.fromConnectionString(connectionString, Protocol);
+
 
 client.open(function(err) {
   if (err) {
@@ -165,6 +172,7 @@ client.open(function(err) {
       if (err) {
         console.error('Could not get device twin');
       } else {
+        deviceTwin = twin;
         console.log('Device twin created');
 
         twin.on('properties.desired', function(delta) {
@@ -188,7 +196,25 @@ client.open(function(err) {
         // Send reported properties
         twin.properties.reported.update(reportedProperties, function(err) {
           if (err) throw err;
-          console.log('twin state reported');
+          if (updateStartTime != 0) {
+            var timestamp = new Date().getTime();
+            var idle = {
+              'Method': {
+                'UpdateFirmware': {
+                  'Status': 'Complete',
+                  'LastUpdate': Date(),
+                  'Duration': (timestamp - updateStartTime) / 1000
+                }
+              },
+              'Device': {'StartupTime': Date()},
+              'System': {'FirmwareVersion': raspberry.getVersion()}
+            };
+            twin.properties.reported.update(idle, function(err) {
+              if (err) throw err;
+              console.log('twin state reported:' + JSON.stringify(idle));
+            })
+          } else
+            console.log('twin state reported');
         });
 
         // Register handlers for direct methods

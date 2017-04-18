@@ -16,7 +16,7 @@ bme.init();
 
 var raspberry = exports;
 raspberry.getVersion = function() {
-  return '1.1';
+  return '2.0';
 };
 
 
@@ -57,6 +57,7 @@ raspberry.getSensorData = function() {
   return JSON.parse(sensorJson);
 };
 
+
 var updateStart;
 var deviceTwin;
 function uploadReport(step, result, dration, next) {
@@ -72,10 +73,13 @@ function uploadReport(step, result, dration, next) {
       status = 'Running';
       break;
   }
-  var report = '{"Method": {"UpdateFirmware": {"' + step + '": {"Status":"' +
-      status + '", "LastUpdate": "' + Date() + '", "Duration": ' + dration +
-      '}}}}';
-  report = JSON.parse(report);
+  var report = {
+    'Method': {
+      'UpdateFirmware': {
+        step: {'Status': status, 'LastUpdate': Date(), 'Duration': dration}
+      }
+    }
+  };
   report.Method.UpdateFirmware.LastUpdate = Date();
   var timestamp = new Date().getTime();
   report.Method.UpdateFirmware.Duration = (timestamp - updateStart) / 1000;
@@ -86,7 +90,7 @@ function uploadReport(step, result, dration, next) {
 
   deviceTwin.properties.reported.update(report, function(err) {
     if (err) throw err;
-    console.log('twin state reported:(' + step + '=' + status + ')');
+    console.log('twin state reported:' + JSON.stringify(report));
     if (next) next();
   });
 }
@@ -110,7 +114,6 @@ raspberry.updateFirmwareStep = function(twin, step, args, next) {
                   '// We consider it a valid firmware if this line exists.') ==
               0) {
             console.log('Download and verify OK: ' + args);
-
             var downloadEnds = new Date().getTime();
             uploadReport(
                 'Download', 0, (downloadEnds - updateStart) / 1000, next);
@@ -127,21 +130,18 @@ raspberry.updateFirmwareStep = function(twin, step, args, next) {
 
     case 2:  // Replace old files
       uploadReport('Applied', 1, 0, () => {
-
         shell.exec('mv raspberry.js raspberry.js_' + Date.now());  // Backup
         shell.exec('mv newversion raspberry.js');
         uploadReport('Applied', 0, 0, next);
       });
+
       return true;
       break;
 
     case 3:  // Restart
       uploadReport('Reboot', 1, 0, () => {
         uploadReport('Reboot', 0, 0, () => {
-          var cmd = 'node remote_monitoring.js "' + raspberry.connectionString +
-              '" ' + updateStart + ' > /dev/null &';
-          console.log('reboot cmd:' + cmd);
-          shell.exec(cmd, {async: true});
+          shell.exec('sudo node happypath.js &');
           process.exit();
         });
       });
